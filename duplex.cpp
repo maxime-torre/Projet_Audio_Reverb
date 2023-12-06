@@ -13,6 +13,31 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <chrono>
+
+class Timer
+{
+private:
+	// Type aliases to make accessing nested type easier
+	using Clock = std::chrono::steady_clock;
+	using Second = std::chrono::duration<double, std::ratio<1> >;
+
+	std::chrono::time_point<Clock> m_beg { Clock::now() };
+
+public:
+	void reset()
+	{
+		m_beg = Clock::now();
+	}
+
+	double elapsed() const
+	{
+		return std::chrono::duration_cast<Second>(Clock::now() - m_beg).count();
+	}
+};
+
+
+
 
 /*
 typedef char MY_TYPE;
@@ -35,7 +60,7 @@ typedef signed short MY_TYPE;
 #define FORMAT RTAUDIO_SINT16
 */
 
-constexpr unsigned int len_impulse_response{88431};
+constexpr unsigned int len_impulse_response{50000};
 
 struct CallbackData{
   unsigned int bufferBytes;
@@ -85,38 +110,38 @@ int inout( void *outputBuffer, void *inputBuffer, unsigned int nBufferFrames,
   // a simple buffer copy operation here.
   if ( status ) std::cout << "Stream over/underflow detected." << std::endl;
 
-  CallbackData *callbackData = static_cast<CallbackData*>(data);
   if ( streamTime >= streamTimePrintTime ) {
     std::cout << "streamTime = " << streamTime << std::endl;
     streamTimePrintTime += streamTimePrintIncrement;
   }
 
-  // Convolution
   
-  // for (unsigned int n{0}; n<callbackData->convol_size; n++) {
-  //   callbackData->convol[n] = 0;
+  CallbackData *callbackData = static_cast<CallbackData*>(data);
+  // Convolution temporelle (max à 2000 pour 44100)
+  Timer t;
+  for (unsigned int n{0}; n<callbackData->convol_size; n++) {
+    unsigned int a{ callbackData->len_impulse_response - 1 };
 
-  //   unsigned int a{ callbackData->len_impulse_response - 1 };
-  //   unsigned int min{ (n < a) ? 0 : n - (a - 1) };
-  //   unsigned int max{ (n < ((nBufferFrames*2) - 1)) ? n : n - ((nBufferFrames*2) - 1) };
+    // callbackData->convol[n] = ( n < a+1 ? callbackData->convol[n + nBufferFrames] : 0);
+    callbackData->convol[n] = 0;
+    unsigned int min{ (n < a) ? 0 : n - (a - 1) };
+    unsigned int max{ (n < ((nBufferFrames) - 1)) ? n : n - ((nBufferFrames) - 1) };
 
-  //   for (unsigned int k{min}; k<max; k++) {
-  //     callbackData->convol[k] += inputBuff[k] * callbackData->impulse_response[n - k];
-  //   }
-  // }
-  // for (unsigned int i{}; i<nBufferFrames*16; i++) {
-  //   outputBuff[i] = callbackData->convol[i];
-  // }
-  // outputBuffer = (void *) outputBuff;
+    for (unsigned int k{min}; k<max; k++) {
+      callbackData->convol[k] += inputBuff[k] * callbackData->impulse_response[n - k];
+    }
+  }
+  std::cout << "Time taken: " << t.elapsed() << " seconds\n";
+
 
 
   // Fonction de base, copie l'entrée sur la sortie
-  memcpy( outputBuffer, (void *)callbackData->input_buffer_dump, callbackData->bufferBytes );
+  memcpy( outputBuffer, inputBuffer, callbackData->bufferBytes );
 
   
   // TODO le son enregistré n'est pas de bonne qualité. On dirait qu'il maanque de l'info
   int a{ write_buff_dump(inputBuff, nBufferFrames, callbackData->input_buffer_dump, callbackData->size_input_buffer_dump, &(callbackData->ind_input_buff_dump))};
-  int b{ write_buff_dump(outputBuff, nBufferFrames, callbackData->output_buffer_dump, callbackData->size_output_buffer_dump, &(callbackData->ind_output_buff_dump))};
+  int b{ write_buff_dump(callbackData->convol, nBufferFrames, callbackData->output_buffer_dump, callbackData->size_output_buffer_dump, &(callbackData->ind_output_buff_dump))};
    a=b;
    b=a;
 
@@ -131,6 +156,7 @@ int main( int argc, char *argv[] )
 {
   unsigned int channels, fs, bufferBytes, oDevice = 0, iDevice = 0, iOffset = 0, oOffset = 0;
   
+  // get_process_time_windows();
   // Minimal command-line checking
   if (argc < 3 || argc > 7 ) usage();
 
@@ -183,7 +209,7 @@ int main( int argc, char *argv[] )
 
   bufferBytes = bufferFrames  * channels * sizeof( MY_TYPE );
 
-  const unsigned int buffer_dump_size{fs * SECONDES * sizeof( MY_TYPE )};
+  const unsigned int buffer_dump_size{fs * SECONDES * static_cast<unsigned int>(sizeof( MY_TYPE ))};
   MY_TYPE *input_buffer_dump = (MY_TYPE *) calloc(buffer_dump_size, sizeof(MY_TYPE));
   int ind_input_buff_dump{};
 
@@ -194,7 +220,7 @@ int main( int argc, char *argv[] )
   // Lecture de la réponde impulsionelle
   double * impulse_response = load_impulse_response("../../impulse_response/impres"/*, &len_impulse_response*/);
   
-  unsigned int convol_size{len_impulse_response + bufferFrames * 2 - 1};
+  unsigned int convol_size{len_impulse_response + bufferFrames - 1};
   MY_TYPE *convol = (MY_TYPE *) calloc(convol_size, sizeof(MY_TYPE));
 
   CallbackData callbackData{
@@ -356,3 +382,43 @@ unsigned int getDeviceIndex( std::vector<std::string> deviceNames, bool isInput 
   std::getline( std::cin, keyHit );  // used to clear out stdin
   return i;
 }
+
+
+// double get_process_time_windows(){
+//     struct timeval time_now{};
+//     gettimeofday(&time_now, nullptr);
+//     time_t msecs_time = (time_now.tv_sec * 1000) + (time_now.tv_usec / 1000);
+//     return (double) msecs_time;
+// }
+
+
+// #define WIN32_LEAN_AND_MEAN
+// #include <Windows.h>
+// #include <stdint.h> // portable: uint64_t   MSVC: __int64 
+
+// MSVC defines this in winsock2.h!?
+// typedef struct timeval {
+//     long tv_sec;
+//     long tv_usec;
+// } timeval;
+
+// int gettimeofday(struct timeval * tp, struct timezone * tzp)
+// {
+//     // Note: some broken versions only have 8 trailing zero's, the correct epoch has 9 trailing zero's
+//     // This magic number is the number of 100 nanosecond intervals since January 1, 1601 (UTC)
+//     // until 00:00:00 January 1, 1970 
+//     static const uint64_t EPOCH = ((uint64_t) 116444736000000000ULL);
+
+//     SYSTEMTIME  system_time;
+//     FILETIME    file_time;
+//     uint64_t    time;
+
+//     GetSystemTime( &system_time );
+//     SystemTimeToFileTime( &system_time, &file_time );
+//     time =  ((uint64_t)file_time.dwLowDateTime )      ;
+//     time += ((uint64_t)file_time.dwHighDateTime) << 32;
+
+//     tp->tv_sec  = (long) ((time - EPOCH) / 10000000L);
+//     tp->tv_usec = (long) (system_time.wMilliseconds * 1000);
+//     return 0;
+// }
